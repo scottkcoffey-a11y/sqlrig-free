@@ -17,11 +17,17 @@ SELECT dp.name AS user_name, dp.sid AS user_sid, dp.type_desc,
 FROM sys.database_principals dp
 LEFT JOIN sys.server_principals sp ON sp.sid = dp.sid
 WHERE dp.type IN ('S')                    -- SQL users only
-  AND dp.authentication_type IN (0, 1)    -- none / SQL (exclude Windows=2, Contained=3)
+  AND dp.authentication_type = 1         -- INSTANCE (login-mapped SQL user). 0 = NONE (WITHOUT LOGIN), 2 = DATABASE (contained), 3 = WINDOWS
   AND dp.sid IS NOT NULL AND dp.sid <> 0x00
   AND dp.name NOT IN (N'dbo', N'guest', N'INFORMATION_SCHEMA', N'sys')
   AND sp.sid IS NULL
 ORDER BY dp.name;
+
+PRINT '=== Users created WITHOUT LOGIN (by design, not orphans; never remapped) ===';
+SELECT dp.name, dp.type_desc, dp.authentication_type_desc
+FROM sys.database_principals dp
+WHERE dp.type = 'S' AND dp.authentication_type = 0
+  AND dp.name NOT IN (N'dbo', N'guest', N'INFORMATION_SCHEMA', N'sys');
 
 PRINT '=== Windows / contained users present (reported only; not remapped by this script) ===';
 SELECT dp.name, dp.type_desc, dp.authentication_type_desc
@@ -40,7 +46,7 @@ DECLARE c CURSOR LOCAL FAST_FORWARD FOR
     SELECT dp.name
     FROM sys.database_principals dp
     LEFT JOIN sys.server_principals sp ON sp.sid = dp.sid
-    WHERE dp.type = 'S' AND dp.authentication_type IN (0, 1)
+    WHERE dp.type = 'S' AND dp.authentication_type = 1
       AND dp.sid IS NOT NULL AND dp.sid <> 0x00
       AND dp.name NOT IN (N'dbo', N'guest', N'INFORMATION_SCHEMA', N'sys')
       AND sp.sid IS NULL;
