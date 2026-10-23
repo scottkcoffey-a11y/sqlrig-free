@@ -13,55 +13,87 @@ IF OBJECT_ID(N'dbo.DemoOrdersArchive', N'U') IS NULL
     CREATE TABLE dbo.DemoOrdersArchive (OrderId int PRIMARY KEY, Status varchar(20) NOT NULL, CreatedAt datetime2(0) NOT NULL, ArchivedAt datetime2(0) NOT NULL DEFAULT SYSDATETIME());
 GO
 
+
 CREATE OR ALTER PROCEDURE dbo.usp_Template_ArchiveOrders
     @OlderThanDays int,
     @Status        varchar(20) = 'Closed',
+    @BatchSize     int    = 2000,        -- keep < 5000 to avoid lock escalation
+    @MaxRows       bigint = 1000000,     -- hard stop per run
     @DryRun        bit = 1,
     @RowsAffected  int = NULL OUTPUT
 AS
-/*  Return codes: 0 = success, 1 = invalid parameter, (errors are re-thrown, not swallowed) */
+/*  Return codes: 0 = success, 1 = invalid parameter, (errors are re-thrown, not swallowed)
+    Writes are batched: each batch archives + deletes TOP (@BatchSize) rows in its own short transaction. */
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
+    IF @DryRun IS NULL
+    BEGIN
+        RAISERROR(N'@DryRun must be 0 or 1 (NULL is rejected - dry-run flags fail closed).', 16, 1);
+        RETURN 1;
+    END;
     IF @OlderThanDays IS NULL OR @OlderThanDays < 1
     BEGIN
         RAISERROR(N'@OlderThanDays must be >= 1.', 16, 1);
         RETURN 1;
     END;
+    IF @BatchSize IS NULL OR @BatchSize NOT BETWEEN 1 AND 4999 OR @MaxRows IS NULL OR @MaxRows < 1
+    BEGIN
+        RAISERROR(N'@BatchSize must be 1-4999 and @MaxRows >= 1.', 16, 1);
+        RETURN 1;
+    END;
 
     DECLARE @Cutoff datetime2(0) = DATEADD(DAY, -@OlderThanDays, SYSDATETIME());
 
-    IF @DryRun = 1
+    IF ISNULL(@DryRun, 1) = 1   -- NULL already rejected above; ISNULL keeps this fail-closed if edited
     BEGIN
         SELECT @RowsAffected = COUNT(*) FROM dbo.DemoOrders WHERE Status = @Status AND CreatedAt < @Cutoff;
-        PRINT CONCAT(N'DRY RUN: would archive ', @RowsAffected, N' rows older than ', CONVERT(nvarchar(30), @Cutoff, 120));
+        PRINT CONCAT(N'DRY RUN: would archive ', @RowsAffected, N' rows older than ', CONVERT(nvarchar(30), @Cutoff, 120),
+                     N' in batches of ', @BatchSize, N' (cap ', @MaxRows, N').');
         RETURN 0;
     END;
 
-    DECLARE @StartedTran bit = 0;
-    BEGIN TRY
-        IF @@TRANCOUNT = 0 BEGIN BEGIN TRANSACTION; SET @StartedTran = 1; END;
+    -- Batched path requires owning the transaction (one short transaction per batch).
+    IF @@TRANCOUNT > 0
+    BEGIN
+        RAISERROR(N'Call with no open transaction: this procedure commits per batch.', 16, 1);
+        RETURN 1;
+    END;
 
-        DECLARE @moved TABLE (OrderId int PRIMARY KEY);
+    DECLARE @Rows int = 1, @Total bigint = 0, @Batch int = 0;
+    DECLARE @moved TABLE (OrderId int PRIMARY KEY);
 
-        INSERT dbo.DemoOrdersArchive (OrderId, Status, CreatedAt)
-        OUTPUT inserted.OrderId INTO @moved
-        SELECT o.OrderId, o.Status, o.CreatedAt
-        FROM dbo.DemoOrders o WITH (UPDLOCK, HOLDLOCK)
-        WHERE o.Status = @Status AND o.CreatedAt < @Cutoff
-          AND NOT EXISTS (SELECT 1 FROM dbo.DemoOrdersArchive a WHERE a.OrderId = o.OrderId);
+    WHILE @Rows > 0 AND @Total < @MaxRows
+    BEGIN
+        DELETE @moved;
+        BEGIN TRY
+            BEGIN TRANSACTION;
 
-        DELETE o FROM dbo.DemoOrders o JOIN @moved m ON m.OrderId = o.OrderId;   -- only rows proven archived
-        SET @RowsAffected = @@ROWCOUNT;
+            INSERT dbo.DemoOrdersArchive (OrderId, Status, CreatedAt)
+            OUTPUT inserted.OrderId INTO @moved
+            SELECT TOP (@BatchSize) o.OrderId, o.Status, o.CreatedAt
+            FROM dbo.DemoOrders o WITH (UPDLOCK, READPAST)
+            WHERE o.Status = @Status AND o.CreatedAt < @Cutoff
+              AND NOT EXISTS (SELECT 1 FROM dbo.DemoOrdersArchive a WHERE a.OrderId = o.OrderId)
+            ORDER BY o.OrderId;
 
-        IF @StartedTran = 1 COMMIT TRANSACTION;
-        RETURN 0;
-    END TRY
-    BEGIN CATCH
-        IF @StartedTran = 1 AND @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-        THROW;   -- preserve original error number/line for the caller and Agent history
-    END CATCH;
+            DELETE o FROM dbo.DemoOrders o JOIN @moved m ON m.OrderId = o.OrderId;   -- only rows proven archived
+            SET @Rows = @@ROWCOUNT;
+
+            COMMIT TRANSACTION;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            THROW;   -- preserve original error number/line for the caller and Agent history
+        END CATCH;
+
+        SET @Total += @Rows; SET @Batch += 1;
+        IF @Rows > 0 RAISERROR('Batch %d: %d rows archived', 0, 1, @Batch, @Rows) WITH NOWAIT;
+    END;
+
+    SET @RowsAffected = CAST(@Total AS int);
+    RETURN 0;
 END;
 GO
 

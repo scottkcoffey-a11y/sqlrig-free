@@ -35,7 +35,7 @@ FROM sys.database_principals dp
 WHERE dp.type IN ('U','G','S') AND dp.authentication_type IN (2, 3)
   AND dp.name NOT IN (N'dbo', N'guest');
 
-IF @DryRun = 1
+IF ISNULL(@DryRun, 1) = 1   -- NULL fails closed (dry run)
 BEGIN
     PRINT 'DRY RUN: remapping skipped. Set @DryRun = 0 to ALTER USER ... WITH LOGIN when a same-named login exists.';
     RETURN;

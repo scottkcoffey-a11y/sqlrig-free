@@ -25,7 +25,7 @@ BEGIN
     RETURN;
 END;
 
-IF @DryRun = 1
+IF ISNULL(@DryRun, 1) = 1   -- NULL fails closed (dry run)
 BEGIN
     PRINT 'DRY RUN - would create:';
     PRINT '  category : ' + @Category;
