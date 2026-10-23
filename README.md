@@ -66,6 +66,3 @@ MIT for the files in this repository. See `LICENSE`. The paid pack has its own b
 ## Contact
 
 Scott Coffey, hello@sqlrig.com
-## License scope
-
-The MIT license covers only the files in this repository. The paid SQL Rig pack is licensed separately and is not covered here.
