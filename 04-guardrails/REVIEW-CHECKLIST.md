@@ -6,6 +6,7 @@ Print this and tick it. If any item is "no", do not apply.
 - [ ] Script header states purpose, `COMPAT` version, and required permissions.
 - [ ] Target server / database is the intended one (not a prod look-alike name by accident).
 - [ ] Dry-run (`@DryRun = 1` / `-WhatIf`) was executed and the printed plan matches intent.
+- [ ] Dry-run flags fail closed on NULL (`ISNULL(@DryRun, 1) = 1` or NULL rejected); `@DryRun = NULL` was tested and did not write.
 
 ## Correctness
 - [ ] Every `UPDATE`/`DELETE` has a selective `WHERE`; estimated row count reviewed.
